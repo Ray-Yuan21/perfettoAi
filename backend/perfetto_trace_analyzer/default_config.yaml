@@ -1,0 +1,48 @@
+# Perfetto Trace Analyzer - Default Configuration
+
+llm:
+  provider: "openai"
+  api_endpoint: "https://api.openai.com/v1"
+  model_name: "gpt-4"
+  api_key: "${OPENAI_API_KEY}"
+  temperature: 0.1
+  max_tokens: 4096
+  timeout: 300
+  max_retries: 1
+  max_tool_turns: 5  # agentic loop max tool call rounds
+
+scoring:
+  weights:
+    startup: 0.20
+    jank: 0.20
+    memory: 0.15
+    cpu: 0.15
+    anr: 0.15
+    lock_contention: 0.05
+    io: 0.05
+    power: 0.025
+    binder: 0.025
+
+analyzers:
+  startup:
+    cold_start_threshold_ms: 5000
+    warm_start_threshold_ms: 2000
+    hot_start_threshold_ms: 1500
+  jank:
+    target_frame_time_ms: 16.67
+    severe_jank_consecutive_frames: 3
+    top_jank_frames: 20
+    buffer_contention_threshold_ms: 5.0
+  anr:
+    main_thread_block_threshold_ms: 5000
+  memory:
+    gc_pressure_threshold_per_sec: 2
+  cpu:
+    top_n_threads: 10
+    scheduling_delay_threshold_ms: 10
+  lock_contention:
+    severe_wait_threshold_ms: 10
+  binder:
+    slow_call_threshold_ms: 50
+  power:
+    wakelock_threshold_sec: 60

@@ -1,0 +1,13 @@
+# Perfetto Trace Analyzer - User Configuration
+# Copy this file to config.yaml and fill in your settings.
+# Usage: python -m perfetto_trace_analyzer trace.pb --config config.yaml
+
+llm:
+  provider: "openai"                          # "openai" or "anthropic"
+  api_endpoint: "https://api.openai.com/v1"   # OpenAI-compatible endpoint
+  model_name: "gpt-4"
+  api_key: "${OPENAI_API_KEY}"                # Use env var or paste key directly
+  temperature: 0.1
+  max_tokens: 4096
+  timeout: 180
+  max_retries: 1

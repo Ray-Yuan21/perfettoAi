@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+*.whl
+dist/
+build/
+.venv/
+venv/
+
+# Node
+node_modules/
+frontend/dist/
+.npm
+*.tgz
+
+# Environment & secrets
+.env
+.env.*
+!.env.example
+backend/config.yaml
+
+# Uploads & traces
+backend/perfetto_trace_analyzer/uploads/
+uploads/
+*.perfetto-trace
+*.pftrace
+*.pb
+!examples/*.perfetto-trace
+!examples/*.pftrace
+
+# Built frontend embedded in backend (Docker build output)
+backend/static/
+
+# Test & coverage
+.coverage
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.hypothesis/
+
+# IDE & tools
+.vscode/
+.claude/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db

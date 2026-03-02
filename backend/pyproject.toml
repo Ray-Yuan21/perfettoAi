@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "perfetto-trace-analyzer"
+version = "0.1.0"
+description = "LLM-driven automated Android performance analysis tool for Perfetto traces"
+requires-python = ">=3.10"
+dependencies = [
+    "perfetto",
+    "pyyaml",
+    "jinja2",
+    "fastapi",
+    "uvicorn",
+    "httpx",
+    "websockets",
+    "python-multipart",
+]
+
+[project.optional-dependencies]
+dev = [
+    "hypothesis",
+    "pytest",
+]
+
+[project.scripts]
+perfetto-trace-analyzer = "perfetto_trace_analyzer.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["perfetto_trace_analyzer*"]

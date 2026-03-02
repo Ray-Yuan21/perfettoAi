@@ -1,0 +1,16 @@
+services:
+  perfetto-ai:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - uploads:/app/backend/perfetto_trace_analyzer/uploads
+    environment:
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - LLM_API_ENDPOINT=${LLM_API_ENDPOINT:-}
+      - LLM_MODEL_NAME=${LLM_MODEL_NAME:-}
+      - LLM_TIMEOUT=${LLM_TIMEOUT:-300}
+    restart: unless-stopped
+
+volumes:
+  uploads:

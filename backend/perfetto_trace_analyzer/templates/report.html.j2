@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Perfetto Trace Analysis Report</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; color: #333; line-height: 1.6; }
+        .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+        h1 { font-size: 24px; margin-bottom: 20px; color: #1a1a1a; }
+        h2 { font-size: 18px; margin: 20px 0 12px; color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 6px; }
+        h3 { font-size: 15px; margin: 12px 0 8px; color: #34495e; }
+
+        .card { background: #fff; border-radius: 8px; padding: 20px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+
+        .score-dashboard { display: flex; align-items: center; gap: 30px; flex-wrap: wrap; }
+        .score-circle { width: 120px; height: 120px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 36px; font-weight: bold; color: #fff; flex-shrink: 0; }
+        .score-high { background: #27ae60; }
+        .score-medium { background: #f39c12; }
+        .score-low { background: #e74c3c; }
+
+        .score-categories { display: flex; gap: 12px; flex-wrap: wrap; }
+        .score-cat { padding: 8px 16px; border-radius: 6px; background: #ecf0f1; font-size: 14px; }
+        .score-cat .label { color: #7f8c8d; }
+        .score-cat .value { font-weight: bold; font-size: 18px; }
+
+        .meta-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; font-size: 14px; }
+        .meta-item .key { color: #7f8c8d; }
+
+        .status-success { color: #27ae60; }
+        .status-error { color: #e74c3c; }
+        .status-insufficient { color: #95a5a6; }
+
+        .severity-critical { color: #fff; background: #c0392b; padding: 2px 8px; border-radius: 4px; font-size: 12px; }
+        .severity-high { color: #fff; background: #e74c3c; padding: 2px 8px; border-radius: 4px; font-size: 12px; }
+        .severity-medium { color: #fff; background: #f39c12; padding: 2px 8px; border-radius: 4px; font-size: 12px; }
+        .severity-low { color: #fff; background: #3498db; padding: 2px 8px; border-radius: 4px; font-size: 12px; }
+
+        .issue-list { list-style: none; }
+        .issue-list li { padding: 8px 0; border-bottom: 1px solid #ecf0f1; }
+        .suggestion-list li { padding: 4px 0; color: #2c3e50; }
+
+        table { width: 100%; border-collapse: collapse; font-size: 14px; margin: 8px 0; }
+        th, td { padding: 8px 12px; text-align: left; border-bottom: 1px solid #ecf0f1; }
+        th { background: #f8f9fa; color: #7f8c8d; font-weight: 600; }
+
+        pre { background: #f8f9fa; padding: 12px; border-radius: 6px; overflow-x: auto; font-size: 13px; }
+        details { margin: 8px 0; }
+        summary { cursor: pointer; color: #3498db; font-weight: 500; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>Perfetto Trace Analysis Report</h1>
+
+    {# Metadata #}
+    <div class="card">
+        <h2>Trace 元数据</h2>
+        <div class="meta-grid">
+            {% for key, value in data.get('metadata', {}).items() %}
+            <div class="meta-item">
+                <span class="key">{{ key }}:</span>
+                <span class="value">{{ value }}</span>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+
+    {# Overall Score #}
+    {% if data.get('overall_score') %}
+    <div class="card">
+        <h2>综合性能评分</h2>
+        <div class="score-dashboard">
+            {% set score = data.overall_score.score %}
+            <div class="score-circle {% if score >= 80 %}score-high{% elif score >= 50 %}score-medium{% else %}score-low{% endif %}">
+                {{ score }}
+            </div>
+            <div class="score-categories">
+                {% for cat, val in data.overall_score.get('category_scores', {}).items() %}
+                <div class="score-cat">
+                    <div class="label">{{ cat }}</div>
+                    <div class="value">{{ val }}</div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    {# Ranked Issues #}
+    {% if data.get('ranked_issues') %}
+    <div class="card">
+        <h2>问题列表（按严重程度排序）</h2>
+        <ul class="issue-list">
+            {% for issue in data.ranked_issues %}
+            <li>
+                <span class="severity-{{ issue.get('severity', 'low') }}">{{ issue.get('severity', 'low') }}</span>
+                {{ issue.get('description', '') }}
+                {% if issue.get('category') %}<em>({{ issue.category }})</em>{% endif %}
+            </li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
+
+    {# Category Reports #}
+    {% for report in data.get('category_reports', []) %}
+    <div class="card">
+        <h2>{{ report.analyzer_name }}
+            <span class="{% if report.status == 'success' %}status-success{% elif report.status == 'insufficient_data' %}status-insufficient{% else %}status-error{% endif %}">
+                ({{ report.status }})
+            </span>
+            {% if report.score is not none %} — {{ report.score }} 分{% endif %}
+        </h2>
+
+        {% if report.get('llm_insights') and report.llm_insights.get('summary') %}
+        <p><strong>摘要：</strong>{{ report.llm_insights.summary }}</p>
+        {% endif %}
+
+        {% if report.get('statistics') %}
+        <h3>统计数据</h3>
+        <table>
+            {% for key, val in report.statistics.items() %}
+            {% if key != 'severe_jank_details' %}
+            <tr><td>{{ key }}</td><td>{{ val }}</td></tr>
+            {% endif %}
+            {% endfor %}
+        </table>
+        {% endif %}
+
+        {% if report.get('issues') %}
+        <h3>检测到的问题</h3>
+        <ul class="issue-list">
+            {% for issue in report.issues %}
+            <li>
+                <span class="severity-{{ issue.get('severity', 'low') }}">{{ issue.get('severity', 'low') }}</span>
+                {{ issue.get('description', '') }}
+            </li>
+            {% endfor %}
+        </ul>
+        {% endif %}
+
+        {% if report.get('suggestions') %}
+        <h3>优化建议</h3>
+        <ol class="suggestion-list">
+            {% for s in report.suggestions %}
+            <li>{{ s }}</li>
+            {% endfor %}
+        </ol>
+        {% endif %}
+
+        {% if report.get('llm_raw_response') %}
+        <details>
+            <summary>查看 LLM 原始响应</summary>
+            <pre>{{ report.llm_raw_response }}</pre>
+        </details>
+        {% endif %}
+    </div>
+    {% endfor %}
+
+    {# Raw JSON #}
+    <details>
+        <summary>查看完整 JSON 数据</summary>
+        <pre>{{ json_data }}</pre>
+    </details>
+</div>
+</body>
+</html>
