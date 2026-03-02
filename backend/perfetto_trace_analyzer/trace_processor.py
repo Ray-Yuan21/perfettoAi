@@ -22,9 +22,17 @@ class TraceProcessorConnection:
             raise FileNotFoundError(f"Trace file not found: {self.trace_path}")
 
         try:
-            from perfetto.trace_processor import TraceProcessor
+            from perfetto.trace_processor import TraceProcessor, TraceProcessorConfig
 
-            self._tp = TraceProcessor(trace=self.trace_path)
+            config_kwargs = {}
+            bin_path = os.environ.get("TRACE_PROCESSOR_SHELL_PATH")
+            if bin_path and os.path.isfile(bin_path):
+                config_kwargs["bin_path"] = bin_path
+
+            self._tp = TraceProcessor(
+                trace=self.trace_path,
+                config=TraceProcessorConfig(**config_kwargs),
+            )
         except Exception as e:
             error_msg = str(e).lower()
             if "proto" in error_msg or "format" in error_msg or "parse" in error_msg:

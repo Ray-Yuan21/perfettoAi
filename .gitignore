@@ -46,6 +46,9 @@ htmlcov/
 *.swp
 *~
 
+# Build artifacts
+bin/
+
 # OS
 .DS_Store
 Thumbs.db
