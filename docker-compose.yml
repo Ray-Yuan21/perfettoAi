@@ -10,6 +10,7 @@ services:
       - LLM_API_ENDPOINT=${LLM_API_ENDPOINT:-}
       - LLM_MODEL_NAME=${LLM_MODEL_NAME:-}
       - LLM_TIMEOUT=${LLM_TIMEOUT:-300}
+      - LLM_MAX_TOOL_TURNS=${LLM_MAX_TOOL_TURNS:-5}
     restart: unless-stopped
 
 volumes:

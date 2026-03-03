@@ -112,7 +112,7 @@ class ConfigManager:
             max_tokens=llm_dict.get("max_tokens", 4096),
             timeout=int(os.environ.get("LLM_TIMEOUT") or llm_dict.get("timeout", 300)),
             max_retries=llm_dict.get("max_retries", 1),
-            max_tool_turns=llm_dict.get("max_tool_turns", 5),
+            max_tool_turns=int(os.environ.get("LLM_MAX_TOOL_TURNS") or llm_dict.get("max_tool_turns", 5)),
         )
 
         scoring_dict = d.get("scoring", {})

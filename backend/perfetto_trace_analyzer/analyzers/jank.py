@@ -13,6 +13,73 @@ logger = logging.getLogger(__name__)
 _DEFAULT_TARGET_FRAME_TIME_MS = 16.67
 _DEFAULT_SEVERE_JANK_CONSECUTIVE = 3
 
+# ─── atrace fallback SQL ──────────────────────────────────────
+
+# 用 draw-VRI[*] slices 作为帧边界（atrace 主线程帧标记）
+_SQL_ATRACE_DRAW_FRAMES = """\
+SELECT
+    s.id AS frame_id,
+    s.ts AS actual_ts,
+    s.dur AS actual_dur,
+    s.dur / 1e6 AS dur_ms,
+    s.name AS slice_name,
+    t.name AS thread_name,
+    t.tid,
+    t.utid,
+    p.name AS process_name,
+    p.upid,
+    p.pid
+FROM slice s
+JOIN thread_track tt ON s.track_id = tt.id
+JOIN thread t ON tt.utid = t.utid
+JOIN process p ON t.upid = p.upid
+WHERE s.name LIKE 'draw-VRI[%]'
+  AND s.dur > 0
+ORDER BY s.ts
+"""
+
+# traversal slices（主线程 measure+layout+draw 整体，比 draw-VRI 更全面）
+_SQL_ATRACE_TRAVERSAL_FRAMES = """\
+SELECT
+    s.id AS frame_id,
+    s.ts AS actual_ts,
+    s.dur AS actual_dur,
+    s.dur / 1e6 AS dur_ms,
+    t.name AS thread_name,
+    t.tid,
+    t.utid,
+    p.name AS process_name,
+    p.upid,
+    p.pid
+FROM slice s
+JOIN thread_track tt ON s.track_id = tt.id
+JOIN thread t ON tt.utid = t.utid
+JOIN process p ON t.upid = p.upid
+WHERE s.name = 'traversal'
+  AND s.dur > 0
+ORDER BY s.ts
+"""
+
+# atrace 模式下的调用栈（主线程 + RenderThread，按进程过滤）
+_SQL_ATRACE_CALL_STACK = """\
+SELECT
+    s.id AS slice_id,
+    s.ts, s.dur, s.dur / 1e6 AS dur_ms,
+    s.name AS slice_name,
+    s.depth, s.parent_id,
+    t.name AS thread_name, t.tid,
+    p.name AS process_name, p.upid
+FROM slice s
+JOIN thread_track tt ON s.track_id = tt.id
+JOIN thread t ON tt.utid = t.utid
+JOIN process p ON t.upid = p.upid
+WHERE (t.name = p.name OR t.name = 'RenderThread'
+       OR t.name LIKE 'Binder:%'
+       OR t.name LIKE 'hwuiTask%')
+  AND s.dur > 0
+ORDER BY s.ts
+"""
+
 # ─── Prompt ──────────────────────────────────────────────────
 
 _PROMPT_TEMPLATE = """你是一个 Android 性能分析专家（精通 SurfaceFlinger 渲染管线）。
@@ -256,7 +323,67 @@ WHERE (t.name IN ('main', 'RenderThread', 'surfaceflinger')
 ORDER BY s.ts
 """
 
+# ─── atrace helpers ───────────────────────────────────────────
+
+def _atrace_frames_to_unified(
+    draw_frames: list[dict],
+    traversal_frames: list[dict],
+    target_ms: float,
+) -> list[dict]:
+    """Convert atrace draw-VRI / traversal slices to unified frame dicts.
+
+    Matches each draw-VRI frame with the nearest preceding traversal slice
+    from the same process (tid).  If no draw-VRI frames exist, falls back
+    to traversal-only.  Output dicts mimic actual_frame_timeline_slice rows
+    so all downstream statistics/LLM code can be reused unchanged.
+    """
+    # Build unified list: prefer draw-VRI as the primary frame marker;
+    # traversal fills in measure+layout time that draw-VRI may not cover.
+    if draw_frames:
+        primary = draw_frames
+    else:
+        primary = traversal_frames
+
+    result = []
+    for f in primary:
+        dur_ms = f.get("dur_ms", 0) or (f.get("actual_dur", 0) / 1e6)
+        overrun = max(0.0, dur_ms - target_ms)
+        result.append({
+            "frame_id": f.get("frame_id"),
+            "actual_ts": f.get("actual_ts", f.get("ts", 0)),
+            "actual_dur": f.get("actual_dur", f.get("dur", 0)),
+            "overrun_ms": round(overrun, 2),
+            # atrace has no jank_type / present_type; synthesize from duration
+            "jank_type": "App Deadline Missed" if dur_ms > target_ms else "None",
+            "present_type": "Late Present" if dur_ms > target_ms else "On-time Present",
+            "layer_name": f.get("slice_name", ""),
+            "process_name": f.get("process_name", ""),
+            "upid": f.get("upid"),
+            "pid": f.get("pid"),
+        })
+    return result
+
+
 # ─── Helpers ──────────────────────────────────────────────────
+
+def _materialize_sql_results(sql_results: dict) -> None:
+    """Convert QueryResultIterator values to list[dict] in-place.
+
+    TraceProcessor query results are single-use iterators; materializing them
+    allows multiple passes (statistics, prompt building, etc.) and .get() access.
+    """
+    for key, val in sql_results.items():
+        if isinstance(val, list):
+            continue
+        try:
+            col_names = val.column_names
+            sql_results[key] = [
+                {col: getattr(row, col) for col in col_names}
+                for row in val
+            ]
+        except Exception:
+            sql_results[key] = []
+
 
 def _is_real_jank(f: dict) -> bool:
     """Determine if a frame is a real jank frame.
@@ -615,6 +742,9 @@ class JankAnalyzer(BaseAnalyzer):
             "jank_by_process": _SQL_JANK_BY_PROCESS,
             "slow_renders": _SQL_SLOW_RENDERS,
             "jank_frame_call_stack": _SQL_JANK_FRAME_CALL_STACK,
+            "atrace_draw_frames": _SQL_ATRACE_DRAW_FRAMES,
+            "atrace_traversal_frames": _SQL_ATRACE_TRAVERSAL_FRAMES,
+            "atrace_call_stack": _SQL_ATRACE_CALL_STACK,
         }
 
     @property
@@ -623,7 +753,29 @@ class JankAnalyzer(BaseAnalyzer):
 
     def analyze(self, tp: Any, llm_client: Any) -> CategoryReport:
         sql_results = self._execute_queries(tp)
+
+        # Convert QueryResultIterator objects to list[dict] so they can be
+        # iterated multiple times and accessed with .get().
+        _materialize_sql_results(sql_results)
+
         frames = sql_results.get("frame_timeline", [])
+
+        # atrace fallback: actual_frame_timeline_slice is empty (no Perfetto FrameTimeline data)
+        if not frames:
+            draw_frames = sql_results.get("atrace_draw_frames", [])
+            traversal_frames = sql_results.get("atrace_traversal_frames", [])
+            if draw_frames or traversal_frames:
+                logger.info(
+                    "No Perfetto frame timeline data; switching to atrace mode "
+                    "(draw_frames=%d traversal=%d)", len(draw_frames), len(traversal_frames)
+                )
+                frames = _atrace_frames_to_unified(
+                    draw_frames, traversal_frames, self._target_frame_time_ms
+                )
+                sql_results["frame_timeline"] = frames
+                # Use atrace call stack instead of Perfetto jank_frame_call_stack
+                sql_results["jank_frame_call_stack"] = sql_results.get("atrace_call_stack", [])
+
         if not frames:
             return CategoryReport(analyzer_name=self.name, status="insufficient_data", sql_results=sql_results)
 

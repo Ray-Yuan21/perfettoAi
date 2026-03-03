@@ -63,8 +63,16 @@ class LLMClient:
         Automatically selects OpenAI or Anthropic format based on config.provider.
         After max_turns tool calls (or when LLM stops calling tools), parses the
         final text response as JSON.
+
+        If max_turns is 0, falls back to simple analyze() without tool calling.
         """
         turns = max_turns if max_turns is not None else self.config.max_tool_turns
+
+        # If max_turns is 0, skip agentic mode and use simple API call
+        if turns == 0:
+            logger.info("max_tool_turns=0, using simple analyze() without tool calling")
+            return self.analyze(prompt)
+
         provider = self.config.provider.lower()
 
         try:
@@ -244,7 +252,13 @@ class LLMClient:
             with urlopen(req, timeout=self.config.timeout) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except HTTPError as e:
-            raise RuntimeError(f"LLM API HTTP error {e.code}: {e.reason}") from e
+            body_text = ""
+            try:
+                body_text = e.read().decode("utf-8", errors="replace")
+            except Exception:
+                pass
+            logger.error("LLM API HTTP %d response body: %s", e.code, body_text[:2000])
+            raise RuntimeError(f"LLM API HTTP error {e.code}: {e.reason} | {body_text[:500]}") from e
         except URLError as e:
             raise RuntimeError(f"LLM API connection error: {e.reason}") from e
         except (KeyError, IndexError) as e:
