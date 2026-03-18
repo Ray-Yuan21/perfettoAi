@@ -17,8 +17,8 @@ export default function JankInsightsPanel({ insights }: Props) {
 
   if (!insights) return null;
 
-  const { bottleneck_type, user_impact_assessment, jank_cause_clusters, app_jank_summary, sf_jank_summary } = insights;
-  const hasContent = bottleneck_type || user_impact_assessment || jank_cause_clusters?.length || app_jank_summary || sf_jank_summary;
+  const { bottleneck_type, user_impact_assessment, hardware_assessment, jank_cause_clusters, app_jank_summary, sf_jank_summary } = insights;
+  const hasContent = bottleneck_type || user_impact_assessment || hardware_assessment || jank_cause_clusters?.length || app_jank_summary || sf_jank_summary;
   if (!hasContent) return null;
 
   const sortedClusters = jank_cause_clusters ? [...jank_cause_clusters].sort((a, b) => b.count - a.count) : [];
@@ -35,6 +35,13 @@ export default function JankInsightsPanel({ insights }: Props) {
           <span className={`bottleneck-badge bottleneck-${bottleneck_type}`}>
             {BOTTLENECK_LABELS[bottleneck_type] ?? bottleneck_type}
           </span>
+        </div>
+      )}
+
+      {hardware_assessment && (
+        <div className="insights-summary">
+          <div className="insights-label">🖥️ 硬件与调度评估</div>
+          <div className="insights-value">{hardware_assessment}</div>
         </div>
       )}
 

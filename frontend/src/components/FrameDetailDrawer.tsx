@@ -82,6 +82,34 @@ export default function FrameDetailDrawer({ frame, onClose }: Props) {
             </>
           )}
 
+          {/* CPU Core Scheduling Distribution */}
+          {f.cpu_scheduling && Object.keys(f.cpu_scheduling).length > 0 && (
+            <>
+              <div className="drawer-divider" />
+              <div className="drawer-kv">
+                <span className="drawer-kv-label">🔧 核心调度分布</span>
+              </div>
+              <div className="cpu-sched-grid">
+                {Object.entries(f.cpu_scheduling)
+                  .sort(([, a], [, b]) => b - a)
+                  .map(([core, ms]) => (
+                    <div key={core} className="cpu-sched-item">
+                      <span className="cpu-sched-core">{core}</span>
+                      <div className="cpu-sched-bar-bg">
+                        <div
+                          className="cpu-sched-bar"
+                          style={{
+                            width: `${Math.min(100, (ms as number) / Math.max(...Object.values(f.cpu_scheduling!)) * 100)}%`,
+                          }}
+                        />
+                      </div>
+                      <span className="cpu-sched-ms">{(ms as number).toFixed(1)}ms</span>
+                    </div>
+                  ))}
+              </div>
+            </>
+          )}
+
           {/* Evidence SQL */}
           {evidences.length > 0 && (
             <div className="evidence-section">

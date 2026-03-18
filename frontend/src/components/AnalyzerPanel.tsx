@@ -1,16 +1,10 @@
 import { useState } from "react";
+import { getAnalyzerLabel } from "../analyzers";
 import type { CategoryReport } from "../api/types";
 
 interface Props {
   report: CategoryReport;
 }
-
-const ANALYZER_LABELS: Record<string, string> = {
-  startup: "Startup Analysis",
-  anr: "ANR Analysis",
-  memory: "Memory Analysis",
-  binder: "Binder IPC Analysis",
-};
 
 interface EvidenceSQL {
   label: string;
@@ -95,7 +89,7 @@ export default function AnalyzerPanel({ report }: Props) {
   const [suggestionsOpen, setSuggestionsOpen] = useState(false);
 
   const insights = (report.llm_insights ?? {}) as Record<string, unknown>;
-  const title = ANALYZER_LABELS[report.analyzer_name] ?? report.analyzer_name;
+  const title = `${getAnalyzerLabel(report.analyzer_name)} Analysis`;
   const score = report.score;
   const scoreCls = score === null ? "" : score >= 80 ? "high" : score >= 50 ? "mid" : "low";
 

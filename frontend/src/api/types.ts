@@ -4,6 +4,12 @@ export interface Trace {
   score: number | null;
 }
 
+export interface AnalyzerOption {
+  id: string;
+  label: string;
+  description: string;
+}
+
 export interface CallTreeNode {
   name: string;
   dur_ms: number;
@@ -54,6 +60,7 @@ export interface JankFrame {
   root_cause?: string;
   call_tree?: CallTreeNode[];
   analysis?: FrameAnalysis;
+  cpu_scheduling?: Record<string, number>;
 }
 
 export interface Issue {
@@ -79,6 +86,7 @@ export interface JankCauseCluster {
 export interface JankInsights {
   bottleneck_type?: string;
   user_impact_assessment?: string;
+  hardware_assessment?: string;
   root_cause?: RootCause[];
   jank_cause_clusters?: JankCauseCluster[];
   summary?: string;
