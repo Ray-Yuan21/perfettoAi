@@ -126,35 +126,33 @@ conda run -n perfetto pytest tests/test_analyzer.py -k "test_name"  # Single tes
 
 ## Architecture
 
+```text
+Browser
+├─ React app
+│  ├─ upload trace / choose analyzers
+│  ├─ poll /api/traces/{id}/status
+│  ├─ render analyzer tabs and results
+│  └─ call /api/jump
+└─ Perfetto UI iframe
+   └─ receives jump commands over WebSocket
+
+FastAPI backend
+├─ routes/          API boundary
+├─ services/        upload / analysis / result workflows
+├─ orchestrator.py  analyzer coordination
+├─ analyzers/       domain analyzers
+├─ presenters/      frontend response shaping
+└─ dependencies.py  shared runtime services
 ```
-User uploads trace
-       │
-       ▼
-FastAPI backend ──► stores file, starts async analysis
-       │
-       ├─► SQL queries via Perfetto trace_processor
-       │         (jank frames, startup slices, ANR events,
-       │          memory counters, Binder transactions)
-       │
-       ├─► LLM root cause analysis per frame/event
-       │
-       └─► Results cached as JSON
-               │
-               ▼
-React frontend polls /api/status/{trace_id}
-       │
-       ├─► Left panel: tabs per analyzer (Jank | Startup | ANR | Memory | Binder)
-       │         scores, issues, AI insights, evidence SQL
-       │
-       └─► Right panel: Perfetto UI iframe
-                 click frame → WebSocket → Perfetto UI jumps to timestamp
-```
+
+The backend is organized as a layered monolith. Routes stay thin, services own workflow orchestration, analyzers focus on domain logic, and presenters assemble frontend-friendly payloads such as `jank_frames`.
 
 ### API Endpoints
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/api/traces/upload` | POST | Upload trace file, start async analysis |
+| `/api/analyzers` | GET | List currently available analyzers and metadata |
 | `/api/traces/{id}/status` | GET | Poll analysis progress |
 | `/api/traces/{id}` | GET | Get full analysis results |
 | `/api/traces/{id}/file` | GET | Download raw trace file |
@@ -176,40 +174,57 @@ React frontend polls /api/status/{trace_id}
 │   ├── pyproject.toml      # Python dependencies
 │   ├── config.yaml         # Local config (optional, overrides defaults)
 │   └── perfetto_trace_analyzer/
-│       ├── server.py           # FastAPI: API routes + static serving + Perfetto proxy
+│       ├── server.py           # FastAPI app wiring
+│       ├── dependencies.py     # Shared runtime service container
 │       ├── config.py           # YAML + env var config loading
 │       ├── orchestrator.py     # Analysis workflow coordination
 │       ├── registry.py         # Analyzer auto-discovery and registration
-│       ├── trace_processor.py  # Perfetto trace_processor connection
-│       ├── models.py           # Pydantic data models
-│       ├── llm_client.py       # LLM API integration
+│       ├── trace_processor.py  # Perfetto trace_processor pool
+│       ├── state.py            # In-memory + JSON-backed state cache
+│       ├── models.py           # Shared dataclass models
+│       ├── llm_client.py       # LLM API integration + JSON repair
 │       ├── tools.py            # LLM tool definitions for agentic analysis
-│       ├── reporter.py         # Report generation (JSON/HTML)
+│       ├── reporter.py         # Generic JSON/HTML serialization
 │       ├── scorer.py           # Performance scoring
 │       ├── base_analyzer.py    # Abstract analyzer base (shared SQL templates)
+│       ├── routes/             # API route modules
+│       ├── services/           # Upload / analysis / result workflows
+│       ├── presenters/         # Frontend-facing response shaping
+│       ├── static/             # Injected Perfetto bridge script
 │       └── analyzers/
-│           ├── jank.py         # Jank detection + LLM root cause analysis
+│           ├── jank/           # Jank detection + per-frame LLM analysis
 │           ├── startup.py      # App startup analysis
 │           ├── anr.py          # ANR detection
 │           ├── memory.py       # Memory analysis
 │           └── binder.py       # Binder IPC analysis
 └── frontend/
     └── src/
-        ├── App.tsx         # Main app: upload, analysis, Perfetto iframe
+        ├── App.tsx         # Page-level composition
         ├── app.css
+        ├── analyzers.ts    # Fallback analyzer metadata
         ├── api/
         │   ├── client.ts   # API client functions
         │   └── types.ts    # TypeScript type definitions
+        ├── hooks/
+        │   ├── useAnalyzerCatalog.ts
+        │   └── useTraceAnalysis.ts
+        ├── state/
+        │   └── appReducer.ts
         └── components/
-            ├── SettingsPanel.tsx       # LLM settings modal
+            ├── SettingsPanel.tsx      # LLM settings modal
+            ├── ResultsPanel.tsx       # Left-side results area
+            ├── PerfettoPanel.tsx      # Right-side Perfetto / upload area
+            ├── AnalyzerPicker.tsx     # Analyzer selection before upload
             ├── ScoreBar.tsx           # Performance score display
             ├── IssueList.tsx          # Ranked issue list
             ├── JankFrameList.tsx      # Frame list with click-to-jump
-            ├── JankInsightsPanel.tsx   # AI insights display
-            ├── FrameDetailDrawer.tsx   # Frame detail side drawer
-            ├── AnalyzerPanel.tsx       # Generic analyzer tab content
+            ├── JankInsightsPanel.tsx  # AI insights display
+            ├── FrameDetailDrawer.tsx  # Frame detail side drawer
+            ├── AnalyzerPanel.tsx      # Generic analyzer tab content
             └── Splitter.tsx           # Resizable panel splitter
 ```
+
+For a fuller architecture walkthrough, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ---
 
@@ -230,7 +245,9 @@ React frontend polls /api/status/{trace_id}
 1. Create `backend/perfetto_trace_analyzer/analyzers/your_analyzer.py`
 2. Inherit from `BaseAnalyzer`, implement `name`, `sql_templates`, `prompt_template`, `analyze()`
 3. Common SQL queries (CPU freq, thread state, Binder, GC, etc.) are available via `COMMON_SQL_TEMPLATES`
-4. Register in `orchestrator.py`
+4. Export it from `backend/perfetto_trace_analyzer/analyzers/__init__.py` so the registry can discover it
+5. If it should appear in the upload UI, add metadata in `catalog_service.py`
+6. Add backend tests and update README / README_CN when the analyzer becomes user-facing
 
 ---
 
