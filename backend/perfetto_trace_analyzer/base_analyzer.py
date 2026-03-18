@@ -51,7 +51,7 @@ SELECT
 FROM thread_state ts
 JOIN thread t ON ts.utid = t.utid
 JOIN process p ON t.upid = p.upid
-WHERE t.name IN ('main', 'RenderThread', 'surfaceflinger')
+WHERE (t.name IN ('main', 'RenderThread', 'surfaceflinger') OR t.name LIKE 'Binder:%')
   AND ts.dur > 500000
 ORDER BY ts.ts
 """,
@@ -119,8 +119,30 @@ WHERE ct.name IN ('mem.rss', 'mem.rss.anon', 'mem.rss.file',
                    'mem.swap', 'oom_score_adj')
 ORDER BY c.ts
 """,
+    # CPU Hardware Topology / Capacity Clusters (Identifies Big/Little cores)
+    "cpu_capacity_clusters": """\
+SELECT
+    cpu,
+    MAX(value) AS max_freq_khz
+FROM counter c
+JOIN cpu_counter_track ct ON c.track_id = ct.id
+WHERE ct.name = 'cpufreq'
+GROUP BY cpu
+ORDER BY max_freq_khz ASC
+""",
+    # Thread CPU Scheduling details (Which core did it run on, and at what frequency?)
+    "thread_cpu_scheduling": """\
+SELECT 
+    s.ts, s.dur, s.dur / 1e6 AS dur_ms, 
+    s.cpu, t.utid, t.name AS thread_name, p.upid
+FROM sched_slice s
+JOIN thread t ON s.utid = t.utid
+JOIN process p ON t.upid = p.upid
+WHERE (t.name IN ('main', 'RenderThread', 'surfaceflinger') OR t.name LIKE 'Binder:%')
+  AND s.dur > 100000
+ORDER BY s.ts
+""",
 }
-
 
 class BaseAnalyzer(ABC):
     """Abstract base class for all analyzer modules."""
@@ -198,21 +220,36 @@ class BaseAnalyzer(ABC):
         analyze() when tp is None (e.g. in unit tests with mock LLM clients).
         """
         if tp is not None and hasattr(llm_client, "analyze_with_tools"):
-            from .tools import registry
+            from perfetto_trace_analyzer.tools import registry
             bound = registry.with_context(tp)
             response = llm_client.analyze_with_tools(prompt, bound)
         else:
             response = llm_client.analyze(prompt)
 
+        # First try a repair pass that forces the raw answer back into JSON.
+        if response.success and response.parsed_data is None:
+            logger.info("LLM response parse failed for %s, attempting JSON repair...", self.name)
+            if hasattr(llm_client, "repair_json") and response.raw_text:
+                repaired = llm_client.repair_json(prompt, response.raw_text)
+                if repaired.parsed_data is not None:
+                    return repaired
+
         # Retry once on parse failure (Property 12)
         if response.success and response.parsed_data is None:
             logger.info("LLM response parse failed for %s, retrying...", self.name)
             if tp is not None and hasattr(llm_client, "analyze_with_tools"):
-                from .tools import registry
+                from perfetto_trace_analyzer.tools import registry
                 bound = registry.with_context(tp)
                 response = llm_client.analyze_with_tools(prompt, bound)
             else:
                 response = llm_client.analyze(prompt)
+
+            if response.success and response.parsed_data is None:
+                logger.info("LLM retry parse failed for %s, attempting final JSON repair...", self.name)
+                if hasattr(llm_client, "repair_json") and response.raw_text:
+                    repaired = llm_client.repair_json(prompt, response.raw_text)
+                    if repaired.parsed_data is not None:
+                        return repaired
 
         return response
 

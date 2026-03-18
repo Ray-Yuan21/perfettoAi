@@ -6,8 +6,8 @@ import json
 import logging
 import re
 from typing import Any, TYPE_CHECKING
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+
+import httpx
 
 from .models import LLMConfig, LLMResponse
 
@@ -27,6 +27,10 @@ class LLMClient:
 
     def __init__(self, config: LLMConfig):
         self.config = config
+        self._http = httpx.Client(
+            timeout=httpx.Timeout(config.timeout, connect=10.0),
+            limits=httpx.Limits(max_connections=5, max_keepalive_connections=2),
+        )
 
     # ── Simple one-shot analysis ──────────────────────────────
 
@@ -49,6 +53,23 @@ class LLMClient:
                 success=False,
                 error=str(e),
             )
+
+    def repair_json(self, original_prompt: str, raw_text: str) -> LLMResponse:
+        """Ask the model to rewrite a non-JSON answer into strict JSON."""
+        schema_hint = self._extract_json_template(original_prompt)
+        repair_prompt = (
+            "你上一轮没有按要求输出严格 JSON。\n"
+            "请基于下面的原始任务要求和你上一轮的回答，直接输出一个 JSON 对象。\n"
+            "不要输出解释、不要输出 markdown 代码块、不要输出额外文字。\n"
+            "如果某些字段无法确定，保留字段并使用空字符串、空数组、空对象或 null。\n\n"
+            "【原始任务要求】\n"
+            f"{original_prompt}\n\n"
+            "【建议遵循的 JSON 模板】\n"
+            f"{schema_hint or '{}'}\n\n"
+            "【你上一轮的回答】\n"
+            f"{raw_text}\n"
+        )
+        return self.analyze(repair_prompt)
 
     # ── Agentic loop with tool calling ────────────────────────
 
@@ -238,29 +259,36 @@ class LLMClient:
         body = self._post(url, payload)
         return body["choices"][0]["message"]["content"]
 
+    @staticmethod
+    def _extract_json_template(prompt: str) -> str | None:
+        """Extract the first JSON code block from the prompt as a schema hint."""
+        match = re.search(r"```json\s*\n(.*?)```", prompt, re.DOTALL)
+        if match:
+            return match.group(1).strip()
+        return None
+
     def _post(self, url: str, payload: dict) -> dict:
         """POST JSON payload and return parsed response body."""
-        data = json.dumps(payload).encode("utf-8")
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.config.api_key}",
             "x-api-key": self.config.api_key,  # Anthropic uses this header
             "anthropic-version": "2023-06-01",
         }
-        req = Request(url, data=data, headers=headers, method="POST")
         try:
-            with urlopen(req, timeout=self.config.timeout) as resp:
-                return json.loads(resp.read().decode("utf-8"))
-        except HTTPError as e:
-            body_text = ""
-            try:
-                body_text = e.read().decode("utf-8", errors="replace")
-            except Exception:
-                pass
-            logger.error("LLM API HTTP %d response body: %s", e.code, body_text[:2000])
-            raise RuntimeError(f"LLM API HTTP error {e.code}: {e.reason} | {body_text[:500]}") from e
-        except URLError as e:
-            raise RuntimeError(f"LLM API connection error: {e.reason}") from e
+            resp = self._http.post(url, json=payload, headers=headers)
+            resp.raise_for_status()
+            return resp.json()
+        except httpx.HTTPStatusError as e:
+            body_text = e.response.text[:2000]
+            logger.error("LLM API HTTP %d response body: %s", e.response.status_code, body_text)
+            raise RuntimeError(
+                f"LLM API HTTP error {e.response.status_code}: {e.response.reason_phrase} | {body_text[:500]}"
+            ) from e
+        except httpx.ConnectError as e:
+            raise RuntimeError(f"LLM API connection error: {e}") from e
+        except httpx.TimeoutException as e:
+            raise RuntimeError(f"LLM API timeout: {e}") from e
         except (KeyError, IndexError) as e:
             raise RuntimeError(f"Unexpected LLM API response format: {e}") from e
 

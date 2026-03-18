@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import inspect
 import logging
 import pkgutil
 from typing import Any
@@ -26,17 +27,22 @@ class AnalyzerRegistry:
 
         for _importer, module_name, _is_pkg in pkgutil.iter_modules(analyzers_pkg.__path__):
             try:
-                importlib.import_module(f".analyzers.{module_name}", package=__package__)
+                module = importlib.import_module(
+                    f".analyzers.{module_name}",
+                    package=__package__,
+                )
             except Exception as e:
                 logger.warning("Failed to import analyzer module %s: %s", module_name, e)
+                continue
 
-        for cls in _all_subclasses(BaseAnalyzer):
-            try:
-                cfg = configs.get(cls.__name__.lower().replace("analyzer", ""), {})
-                instance = cls(config=cfg) if cfg else cls()
-                self.register(instance)
-            except Exception as e:
-                logger.warning("Failed to instantiate %s: %s", cls.__name__, e)
+            for cls in _discover_module_analyzers(module):
+                try:
+                    probe = cls()
+                    cfg = configs.get(probe.name, {})
+                    instance = cls(config=cfg) if cfg else probe
+                    self.register(instance)
+                except Exception as e:
+                    logger.warning("Failed to instantiate %s: %s", cls.__name__, e)
 
     def register(self, analyzer: BaseAnalyzer) -> None:
         """Register an analyzer instance."""
@@ -60,11 +66,18 @@ class AnalyzerRegistry:
         return list(self._analyzers.keys())
 
 
-def _all_subclasses(cls: type) -> set[type]:
-    """Recursively find all concrete subclasses of a class."""
-    result = set()
-    for sub in cls.__subclasses__():
-        if not getattr(sub, "__abstractmethods__", None):
-            result.add(sub)
-        result.update(_all_subclasses(sub))
-    return result
+def _discover_module_analyzers(module: object) -> list[type[BaseAnalyzer]]:
+    """Find concrete analyzer classes exported by a module or package."""
+    analyzers: list[type[BaseAnalyzer]] = []
+    for _, value in inspect.getmembers(module, inspect.isclass):
+        if not issubclass(value, BaseAnalyzer) or value is BaseAnalyzer:
+            continue
+        if not (
+            value.__module__ == module.__name__
+            or value.__module__.startswith(f"{module.__name__}.")
+        ):
+            continue
+        if getattr(value, "__abstractmethods__", None):
+            continue
+        analyzers.append(value)
+    return analyzers

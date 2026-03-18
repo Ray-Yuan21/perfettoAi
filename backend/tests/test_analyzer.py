@@ -19,7 +19,7 @@ from perfetto_trace_analyzer.scorer import PerformanceScorer, rank_issues
 from perfetto_trace_analyzer.config import ConfigManager
 from perfetto_trace_analyzer.llm_client import LLMClient
 from perfetto_trace_analyzer.orchestrator import scan_trace_files
-from perfetto_trace_analyzer.reporter import ReportGenerator, _result_to_dict
+from perfetto_trace_analyzer.reporter import ReportGenerator, result_to_dict
 from perfetto_trace_analyzer.models import AnalysisResult
 
 
@@ -172,6 +172,39 @@ def test_llm_error_isolation():
     report = analyzer.analyze(MockTP(), MockLLMFailing())
     assert report.status == "llm_error"
     assert report.statistics  # Statistics should still be computed
+
+
+def test_llm_parse_failure_uses_json_repair():
+    """Feature: perfetto-trace-analyzer, Property 12: Parse failure repair."""
+    from perfetto_trace_analyzer.models import LLMResponse
+
+    analyzer = JankAnalyzer()
+
+    class MockTP:
+        def query(self, sql):
+            return [{"actual_dur": 20_000_000, "expected_dur": 16_670_000}] * 10
+
+    class MockLLMRepairing:
+        def analyze(self, prompt):
+            return LLMResponse(
+                raw_text="我会先分析这个 trace，然后给出结果。",
+                parsed_data=None,
+                success=True,
+                error="Failed to parse JSON from response",
+            )
+
+        def repair_json(self, original_prompt, raw_text):
+            return LLMResponse(
+                raw_text='{"summary":"ok","issues":[],"suggestions":[],"score":80}',
+                parsed_data={"summary": "ok", "issues": [], "suggestions": [], "score": 80},
+                success=True,
+                error=None,
+            )
+
+    report = analyzer.analyze(MockTP(), MockLLMRepairing())
+    assert report.status == "success"
+    assert report.llm_insights is not None
+    assert report.score == 80
 
 
 # ============================================================
@@ -337,7 +370,7 @@ def test_json_report_completeness():
         ),
     )
 
-    data = _result_to_dict(result)
+    data = result_to_dict(result)
     assert "metadata" in data
     assert data["metadata"]["trace_file"] == "test.perfetto-trace"
     assert "category_reports" in data

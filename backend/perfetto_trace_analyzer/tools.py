@@ -229,7 +229,7 @@ registry = ToolRegistry()
 
 
 @registry.tool
-def perfetto_jump(ts: int, dur: int = 0) -> str:
+def perfetto_jump(ts: int, dur: int = 0, **kwargs) -> str:
     """Jump to a timestamp in Perfetto UI with area selection (box highlight).
 
     Moves the viewport to center on the time range and creates an
@@ -254,7 +254,7 @@ def perfetto_jump(ts: int, dur: int = 0) -> str:
 
 
 @registry.tool
-def perfetto_list_traces() -> str:
+def perfetto_list_traces(**kwargs) -> str:
     """List all loaded traces in the analyzer server.
 
     Returns:
@@ -276,7 +276,7 @@ def perfetto_list_traces() -> str:
 
 
 @registry.tool
-def perfetto_get_jank_frames(trace_id: str, top_n: int = 10) -> str:
+def perfetto_get_jank_frames(trace_id: str, top_n: int = 10, **kwargs) -> str:
     """Get the top N worst jank frames from a trace.
 
     Use the returned ts/dur values with perfetto_jump to navigate.
@@ -319,7 +319,7 @@ _SQL_READONLY_RE = re.compile(r"^\s*SELECT\b", re.IGNORECASE)
 _MAX_LIMIT = 200
 
 
-def _run_query_trace(tp: Any, sql: str, limit: int = 100) -> str:
+def _run_query_trace(tp: Any, sql: str, limit: int = 100, **kwargs) -> str:
     """Execute sql against tp, enforcing SELECT-only and row limit."""
     if not _SQL_READONLY_RE.match(sql):
         return "Error: only SELECT queries are allowed."
@@ -340,7 +340,7 @@ def _run_query_trace(tp: Any, sql: str, limit: int = 100) -> str:
 
 
 @registry.tool
-def query_trace(sql: str, limit: int = 100) -> str:
+def query_trace(sql: str, limit: int = 100, **kwargs) -> str:
     """Execute a SQL query against the loaded Perfetto trace database.
 
     Use this tool to investigate specific performance issues in detail.
