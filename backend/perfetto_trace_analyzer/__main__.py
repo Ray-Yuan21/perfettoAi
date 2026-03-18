@@ -153,8 +153,8 @@ def _serve(args, config) -> int:
         os.environ["_PTA_CONFIG"] = args.config
 
     print(f"\n  Backend API:  http://localhost:{args.port}/api/traces")
-    print(f"  Perfetto UI:  http://localhost:{args.port}/perfetto/")
-    print(f"  Frontend:     cd ../frontend && npm run dev\n")
+    print(f"  Perfetto UI:  http://localhost:{args.port}/")
+    print(f"  Frontend:     http://localhost:5173 (run: cd ../frontend && npm run dev)\n")
 
     uvicorn.run(
         "perfetto_trace_analyzer.server:app",

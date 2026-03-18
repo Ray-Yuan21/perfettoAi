@@ -17,7 +17,7 @@ This directory contains small sample Perfetto trace files for quickly trying per
 curl -F "file=@examples/jank_sample.perfetto-trace" \
   http://localhost:8000/api/traces/upload
 
-# Or drag-drop any of these files into the web UI at http://localhost:3000
+# Or drag-drop any of these files into the web UI at http://localhost:5173
 ```
 
 ## Capturing your own trace

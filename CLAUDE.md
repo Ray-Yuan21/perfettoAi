@@ -62,8 +62,8 @@ User uploads trace → Backend stores file → Perfetto UI loads via iframe
 - `components/FrameDetailDrawer.tsx` - Right-side drawer showing LLM analysis (bottleneck, flow description, evidence SQL)
 
 ### Key Data Flow
-1. Upload: `POST /api/upload` → returns `trace_id`
-2. Status: `GET /api/status/{trace_id}` → polling until "done"
+1. Upload: `POST /api/traces/upload` → returns `trace_id`
+2. Status: `GET /api/traces/{trace_id}/status` → polling until "done"
 3. Results: `GET /api/traces/{trace_id}` → full analysis JSON
 4. Jump: `POST /api/jump` → broadcasts via WebSocket → Perfetto UI navigates
 
@@ -80,4 +80,4 @@ User uploads trace → Backend stores file → Perfetto UI loads via iframe
 1. Create `backend/perfetto_trace_analyzer/analyzers/your_analyzer.py`
 2. Inherit from `BaseAnalyzer`, implement `name`, `sql_templates`, `prompt_template`, `analyze()`
 3. Common SQL queries (CPU freq, thread state, etc.) are automatically available via `COMMON_SQL_TEMPLATES`
-4. Register in `orchestrator.py`
+4. Export it from `analyzers/__init__.py` if you want it discoverable in the catalog
