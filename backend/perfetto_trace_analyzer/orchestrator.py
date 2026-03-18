@@ -4,28 +4,33 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any
 
-from .config import ConfigManager
+from .dependencies import get_services
 from .llm_client import LLMClient
 from .models import AnalysisResult, AppConfig, CategoryReport
 from .registry import AnalyzerRegistry
 from .reporter import ReportGenerator
 from .scorer import PerformanceScorer
-from .trace_processor import TraceProcessorConnection
+from .trace_processor import TraceProcessorPool
 
 logger = logging.getLogger(__name__)
-
 
 class Orchestrator:
     """Coordinates trace loading, analyzer execution, scoring, and report generation."""
 
-    def __init__(self, config: AppConfig):
+    def __init__(
+        self,
+        config: AppConfig,
+        trace_processor_pool: TraceProcessorPool | None = None,
+    ):
         self.config = config
         self.registry = AnalyzerRegistry()
         self.llm_client = LLMClient(config.llm)
         self.scorer = PerformanceScorer(config.scoring)
         self.reporter = ReportGenerator()
+        self.trace_processor_pool = (
+            trace_processor_pool or get_services().trace_processor_pool
+        )
 
         self.registry.auto_discover(config.analyzers)
 
@@ -36,8 +41,7 @@ class Orchestrator:
         package_filter: str | None = None,
     ) -> AnalysisResult:
         """Run the full analysis pipeline on a single trace file."""
-        tp = TraceProcessorConnection(trace_path)
-        tp.load()
+        tp = self.trace_processor_pool.get_connection(trace_path)
 
         try:
             metadata = tp.get_metadata()
@@ -76,7 +80,8 @@ class Orchestrator:
                 overall_score=score,
             )
         finally:
-            tp.close()
+            # We DONT close the connection, because it's pooled.
+            pass
 
     def batch_analyze(
         self,
