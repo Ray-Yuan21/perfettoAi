@@ -7,10 +7,16 @@ import logging
 from typing import Any
 
 from ..base_analyzer import BaseAnalyzer
+from ..diagnostics import (
+    describe_hardware_context as _describe_hardware_context,
+    get_cpu_capacity_clusters,
+    get_cpu_frequency_stats,
+    get_thread_cpu_scheduling_aggs,
+    get_thread_state_aggs,
+)
 from ..models import CategoryReport
 from ..analysis_utils import (
     build_call_tree as _build_call_tree,
-    build_hardware_context as _build_hardware_context,
 )
 
 logger = logging.getLogger(__name__)
@@ -225,37 +231,10 @@ class StartupAnalyzer(BaseAnalyzer):
         cl = sql_results.get("class_loading", [])
         cl_total_ms = sum(s.get("dur_ms", 0) for s in cl)
 
-        # Thread State Aggregation (CPU true cost)
-        states = sql_results.get("thread_state", [])
-        state_aggs: dict[str, float] = {}
-        for row in states:
-             s = row.get("state", "Unknown")
-             dur_ms = row.get("dur_ms", 0)
-             state_aggs[s] = state_aggs.get(s, 0.0) + dur_ms
-
-        # CPU freq stats
-        cpu_freq_rows = sql_results.get("cpu_freq", [])
-        cpu_stats = []
-        if cpu_freq_rows:
-            cpu_stats = [
-                {
-                    "cpu": r.get("cpu"),
-                    "avg_freq_mhz": round((r.get("avg_freq_khz") or 0) / 1000, 0),
-                    "max_freq_mhz": round((r.get("max_freq_khz") or 0) / 1000, 0),
-                }
-                for r in cpu_freq_rows
-            ]
-            
-        cpu_clusters = sql_results.get("cpu_capacity_clusters", [])
-
-        # Sched Slices grouping map
-        sched = sql_results.get("thread_cpu_scheduling", [])
-        sched_aggs: dict[str, float] = {}
-        for r in sched:
-            cpu = r.get("cpu", "unk")
-            dur = r.get("dur_ms", 0.0)
-            key = f"CPU_{cpu}"
-            sched_aggs[key] = sched_aggs.get(key, 0.0) + dur
+        cpu_stats = get_cpu_frequency_stats(sql_results)
+        cpu_clusters = get_cpu_capacity_clusters(sql_results)
+        state_aggs = get_thread_state_aggs(sql_results)
+        sched_aggs = get_thread_cpu_scheduling_aggs(sql_results)
 
         return {
             "estimated_startup_ms": round(startup_ms, 1),
@@ -263,8 +242,8 @@ class StartupAnalyzer(BaseAnalyzer):
             "class_loading_total_ms": round(cl_total_ms, 1),
             "cpu_freq_stats": cpu_stats,
             "cpu_capacity_clusters": cpu_clusters,
-            "thread_state_aggs": {k: round(v, 1) for k, v in state_aggs.items()},
-            "thread_cpu_scheduling_aggs": {k: round(v, 1) for k, v in sched_aggs.items() if v > 1.0},
+            "thread_state_aggs": state_aggs,
+            "thread_cpu_scheduling_aggs": sched_aggs,
         }
         # debug logging after dict is constructed won't work, so log before return
         # (moved logging to _build_startup_prompt instead)
@@ -272,7 +251,7 @@ class StartupAnalyzer(BaseAnalyzer):
     def _build_startup_prompt(
         self, statistics: dict[str, Any], sql_results: dict[str, Any]
     ) -> str:
-        hardware_context = _build_hardware_context(statistics)
+        hardware_context = _describe_hardware_context(statistics)
 
         logger.debug("cpu_capacity_clusters: %s", statistics.get('cpu_capacity_clusters', [])[:3])
         logger.debug("thread_cpu_scheduling_aggs: %s", statistics.get('thread_cpu_scheduling_aggs', {}))
@@ -302,4 +281,3 @@ class StartupAnalyzer(BaseAnalyzer):
                 sql_results.get("binder_transactions", [])[:20], indent=2, ensure_ascii=False, default=str
             ),
         )
-

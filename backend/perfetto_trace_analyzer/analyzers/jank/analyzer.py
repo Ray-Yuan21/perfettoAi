@@ -16,9 +16,17 @@ import logging
 from typing import Any
 
 from ...base_analyzer import BaseAnalyzer
+from ...diagnostics import (
+    build_top_jank_frames,
+    describe_hardware_context as _describe_hardware_context,
+    get_unified_frame_timeline,
+    get_cpu_capacity_clusters,
+    get_cpu_frequency_stats,
+    get_gpu_frequency_stats,
+    summarize_frame_timeline,
+)
 from ...models import CategoryReport
 from ...analysis_utils import (
-    build_hardware_context as _build_hardware_context,
     call_tree_to_text as _call_tree_to_text,
 )
 
@@ -37,13 +45,9 @@ from .sql_templates import (
 )
 from .prompt import PROMPT_TEMPLATE
 from .frame_analysis import (
-    atrace_frames_to_unified,
     materialize_sql_results,
     is_real_jank,
     percentile,
-    build_top_jank_frames_with_trees,
-    classify_jank_frames,
-    detect_severe_jank,
 )
 
 # Backward-compatible aliases (used by tests and external imports)
@@ -93,22 +97,15 @@ class JankAnalyzer(BaseAnalyzer):
         sql_results = self._execute_queries(tp)
         materialize_sql_results(sql_results)
 
-        frames = sql_results.get("frame_timeline", [])
-
-        # atrace fallback: actual_frame_timeline_slice is empty
-        if not frames:
-            draw_frames = sql_results.get("atrace_draw_frames", [])
-            traversal_frames = sql_results.get("atrace_traversal_frames", [])
-            if draw_frames or traversal_frames:
-                logger.info(
-                    "No Perfetto frame timeline data; switching to atrace mode "
-                    "(draw_frames=%d traversal=%d)", len(draw_frames), len(traversal_frames)
-                )
-                frames = atrace_frames_to_unified(
-                    draw_frames, traversal_frames, self._target_frame_time_ms
-                )
-                sql_results["frame_timeline"] = frames
-                sql_results["jank_frame_call_stack"] = sql_results.get("atrace_call_stack", [])
+        had_perfetto_frames = bool(sql_results.get("frame_timeline"))
+        frames = get_unified_frame_timeline(sql_results, self._target_frame_time_ms)
+        if frames and not had_perfetto_frames and sql_results.get("atrace_call_stack"):
+            logger.info(
+                "No Perfetto frame timeline data; switching to atrace mode "
+                "(draw_frames=%d traversal=%d)",
+                len(sql_results.get("atrace_draw_frames", [])),
+                len(sql_results.get("atrace_traversal_frames", [])),
+            )
 
         if not frames:
             return CategoryReport(analyzer_name=self.name, status="insufficient_data", sql_results=sql_results)
@@ -123,51 +120,13 @@ class JankAnalyzer(BaseAnalyzer):
         if not frames:
             return {}
 
-        total = len(frames)
-        jank_count = sum(1 for f in frames if is_real_jank(f))
-        jank_rate = jank_count / total if total > 0 else 0.0
+        stats = summarize_frame_timeline(
+            sql_results,
+            target_frame_time_ms=self._target_frame_time_ms,
+            severe_consecutive=self._severe_consecutive,
+        )
 
-        overruns = [f.get("overrun_ms", 0) for f in frames if (f.get("overrun_ms") or 0) > 0]
-        sorted_overruns = sorted(overruns)
-
-        # App vs SF split
-        app_frames = [f for f in frames if "surfaceflinger" not in (f.get("process_name") or "").lower()]
-        sf_frames = [f for f in frames if "surfaceflinger" in (f.get("process_name") or "").lower()]
-
-        stats: dict[str, Any] = {
-            "total_frames": total,
-            "jank_frames": jank_count,
-            "jank_rate_pct": round(jank_rate * 100, 2),
-            "target_frame_time_ms": self._target_frame_time_ms,
-            "max_overrun_ms": round(max(sorted_overruns), 2) if sorted_overruns else 0,
-            "p95_overrun_ms": round(percentile(sorted_overruns, 95), 2) if sorted_overruns else 0,
-            "app_total_frames": len(app_frames),
-            "app_jank_frames": sum(1 for f in app_frames if is_real_jank(f)),
-            "sf_total_frames": len(sf_frames),
-            "sf_jank_frames": sum(1 for f in sf_frames if is_real_jank(f)),
-        }
-
-        if stats["app_total_frames"] > 0:
-            stats["app_jank_rate_pct"] = round(stats["app_jank_frames"] / stats["app_total_frames"] * 100, 2)
-        if stats["sf_total_frames"] > 0:
-            stats["sf_jank_rate_pct"] = round(stats["sf_jank_frames"] / stats["sf_total_frames"] * 100, 2)
-
-        # present_type counts
-        present_map = {r.get("present_type", ""): r.get("cnt", 0) for r in sql_results.get("present_type_stats", [])}
-        stats["dropped_frames"] = present_map.get("Dropped Frame", 0)
-        stats["late_present_frames"] = present_map.get("Late Present", 0)
-
-        # Frame duration stats (for ScoreBar)
-        frame_durs = sorted([f.get("actual_dur", 0) / 1e6 for f in frames if (f.get("actual_dur") or 0) > 0])
-        stats["p95_frame_time_ms"] = round(percentile(frame_durs, 95), 2) if frame_durs else 0
-        stats["max_frame_time_ms"] = round(max(frame_durs), 2) if frame_durs else 0
-
-        # Severe jank (consecutive)
-        jank_flags = [is_real_jank(f) for f in frames]
-        stats["severe_jank_events"] = len(detect_severe_jank(jank_flags, self._severe_consecutive))
-
-        # Top worst jank frames with call trees
-        stats["top_jank_frames"] = build_top_jank_frames_with_trees(
+        stats["top_jank_frames"] = build_top_jank_frames(
             frames,
             sql_results.get("jank_frame_call_stack", []),
             thread_states=sql_results.get("thread_state", []),
@@ -180,39 +139,20 @@ class JankAnalyzer(BaseAnalyzer):
             top_n=self._top_jank_frames,
         )
 
-        # Slow render slices summary
-        slow_renders = sql_results.get("slow_renders", [])
-        if slow_renders:
-            durs = [s.get("dur_ms", 0) for s in slow_renders if s.get("dur_ms")]
-            stats["slow_render_p95_ms"] = round(percentile(sorted(durs), 95), 2) if durs else 0
-            stats["slow_render_max_ms"] = round(max(durs), 2) if durs else 0
-
         # Hardware stats
-        stats["cpu_capacity_clusters"] = sql_results.get("cpu_capacity_clusters", [])
+        stats["cpu_capacity_clusters"] = get_cpu_capacity_clusters(sql_results)
         logger.debug("cpu_capacity_clusters: %d records", len(stats["cpu_capacity_clusters"]))
 
         thread_cpu_sched = sql_results.get("thread_cpu_scheduling", [])
         logger.debug("thread_cpu_scheduling: %d raw sched_slice records", len(thread_cpu_sched))
 
-        cpu_freq_rows = sql_results.get("cpu_freq", [])
-        if cpu_freq_rows:
-            stats["cpu_freq_stats"] = [
-                {
-                    "cpu": r.get("cpu"),
-                    "avg_freq_mhz": round((r.get("avg_freq_khz") or 0) / 1000, 1),
-                    "max_freq_mhz": round((r.get("max_freq_khz") or 0) / 1000, 1),
-                    "min_freq_mhz": round((r.get("min_freq_khz") or 0) / 1000, 1),
-                }
-                for r in cpu_freq_rows
-            ]
+        cpu_freq_stats = get_cpu_frequency_stats(sql_results)
+        if cpu_freq_stats:
+            stats["cpu_freq_stats"] = cpu_freq_stats
 
-        gpu_freq_rows = sql_results.get("gpu_freq", [])
-        if gpu_freq_rows and (gpu_freq_rows[0].get("max_freq_hz") or 0) > 0:
-            r = gpu_freq_rows[0]
-            stats["gpu_freq_stats"] = {
-                "avg_freq_mhz": round((r.get("avg_freq_hz") or 0) / 1000, 1),
-                "max_freq_mhz": round((r.get("max_freq_hz") or 0) / 1000, 1),
-            }
+        gpu_freq_stats = get_gpu_frequency_stats(sql_results)
+        if gpu_freq_stats:
+            stats["gpu_freq_stats"] = gpu_freq_stats
 
         return stats
 
@@ -224,7 +164,7 @@ class JankAnalyzer(BaseAnalyzer):
         package_name: str | None = None,
     ) -> str:
         stats_overview = {k: v for k, v in statistics.items() if k not in ("top_jank_frames", "cpu_freq_stats", "gpu_freq_stats")}
-        hardware_context = _build_hardware_context(statistics)
+        hardware_context = _describe_hardware_context(statistics)
         logger.debug("hardware_context for LLM:\n%s", hardware_context)
 
         top_frames = statistics.get("top_jank_frames", [])

@@ -5,6 +5,16 @@ from types import SimpleNamespace
 from perfetto_trace_analyzer.models import AnalysisResult, CategoryReport
 from perfetto_trace_analyzer.services.catalog_service import CatalogService
 from perfetto_trace_analyzer.base_analyzer import BaseAnalyzer
+from perfetto_trace_analyzer.diagnostics import (
+    build_top_jank_frames,
+    describe_hardware_context,
+    get_unified_frame_timeline,
+    get_cpu_capacity_clusters,
+    get_cpu_frequency_stats,
+    get_thread_cpu_scheduling_aggs,
+    get_thread_state_aggs,
+    summarize_frame_timeline,
+)
 from perfetto_trace_analyzer.presenters import present_trace_result
 from perfetto_trace_analyzer.registry import AnalyzerRegistry
 from perfetto_trace_analyzer.trace_processor import TraceProcessorConnection, TraceProcessorPool
@@ -168,3 +178,162 @@ def test_trace_processor_pool_deduplicates_inflight_load(monkeypatch, tmp_path):
 
     assert load_calls == 1
     assert len({id(conn) for conn in results}) == 1
+
+
+def test_cpu_metrics_keep_existing_stat_shape():
+    sql_results = {
+        "cpu_freq": [
+            {"cpu": 0, "avg_freq_khz": 1200000, "max_freq_khz": 1800000, "min_freq_khz": 800000},
+            {"cpu": 7, "avg_freq_khz": 2400000, "max_freq_khz": 3000000, "min_freq_khz": 1800000},
+        ],
+        "cpu_capacity_clusters": [
+            {"cpu": 0, "max_freq_khz": 1800000},
+            {"cpu": 7, "max_freq_khz": 3000000},
+        ],
+    }
+
+    cpu_stats = get_cpu_frequency_stats(sql_results)
+    cpu_clusters = get_cpu_capacity_clusters(sql_results)
+    hardware_context = describe_hardware_context(
+        {
+            "cpu_freq_stats": cpu_stats,
+            "cpu_capacity_clusters": cpu_clusters,
+        }
+    )
+
+    assert cpu_stats[0]["avg_freq_mhz"] == 1200
+    assert cpu_stats[1]["max_freq_mhz"] == 3000
+    assert cpu_clusters[1]["cpu"] == 7
+    assert "旗舰机" in hardware_context
+
+
+def test_thread_and_scheduling_metrics_keep_existing_stat_shape():
+    sql_results = {
+        "thread_state": [
+            {"state": "R", "dur_ms": 8.2},
+            {"state": "S", "dur_ms": 12.4},
+            {"state": "S", "dur_ms": 2.1},
+        ],
+        "thread_cpu_scheduling": [
+            {"cpu": 0, "dur_ms": 1.5},
+            {"cpu": 0, "dur_ms": 2.0},
+            {"cpu": 7, "dur_ms": 4.5},
+        ],
+    }
+
+    thread_state_aggs = get_thread_state_aggs(sql_results)
+    scheduling_aggs = get_thread_cpu_scheduling_aggs(sql_results)
+
+    assert thread_state_aggs == {"R": 8.2, "S": 14.5}
+    assert scheduling_aggs == {"CPU_0": 3.5, "CPU_7": 4.5}
+
+
+def test_frame_timing_diagnostics_keep_existing_stat_shape():
+    sql_results = {
+        "frame_timeline": [
+            {
+                "frame_id": 1,
+                "actual_ts": 0,
+                "actual_dur": 20_000_000,
+                "overrun_ms": 3.33,
+                "present_type": "Late Present",
+                "jank_type": "App Deadline Missed",
+                "process_name": "com.demo",
+            },
+            {
+                "frame_id": 2,
+                "actual_ts": 20_000_000,
+                "actual_dur": 15_000_000,
+                "overrun_ms": 0,
+                "present_type": "On-time Present",
+                "jank_type": "None",
+                "process_name": "com.demo",
+            },
+        ],
+        "present_type_stats": [
+            {"present_type": "Late Present", "cnt": 1},
+            {"present_type": "On-time Present", "cnt": 1},
+        ],
+        "slow_renders": [{"dur_ms": 12.0}, {"dur_ms": 18.0}],
+    }
+
+    stats = summarize_frame_timeline(sql_results, target_frame_time_ms=16.67, severe_consecutive=2)
+
+    assert stats["total_frames"] == 2
+    assert stats["jank_frames"] == 1
+    assert stats["late_present_frames"] == 1
+    assert stats["p95_frame_time_ms"] >= 15.0
+
+
+def test_frame_window_diagnostics_build_top_jank_frames():
+    frames = [
+        {
+            "frame_id": 7,
+            "actual_ts": 100,
+            "actual_dur": 21_000_000,
+            "expected_dur": 16_670_000,
+            "overrun_ms": 4.3,
+            "present_type": "Dropped Frame",
+            "jank_type": "App Deadline Missed",
+            "layer_name": "com.demo/.MainActivity#42",
+            "process_name": "com.demo",
+            "upid": 42,
+        }
+    ]
+    top_frames = build_top_jank_frames(
+        frames,
+        call_stacks=[
+            {
+                "slice_id": 1,
+                "ts": 100,
+                "dur": 8_000_000,
+                "dur_ms": 8.0,
+                "slice_name": "inflate",
+                "depth": 0,
+                "parent_id": None,
+                "thread_name": "main",
+                "upid": 42,
+            }
+        ],
+        thread_states=[
+            {
+                "ts": 100,
+                "dur": 5_000_000,
+                "thread_name": "main",
+                "state": "Running",
+                "io_wait": 0,
+                "upid": 42,
+            }
+        ],
+        cpu_freq_events=[{"ts": 100, "cpu": 0, "freq_khz": 1200000}],
+        thread_cpu_scheduling=[{"ts": 100, "dur": 4_000_000, "cpu": 0, "upid": 42}],
+        top_n=1,
+    )
+
+    assert top_frames[0]["bottleneck"].startswith("inflate")
+    assert top_frames[0]["thread_states"][0]["thread"] == "main"
+    assert top_frames[0]["thread_cpu_scheduling"]["CPU_0"] == 4.0
+
+
+def test_frame_timing_diagnostics_fall_back_to_atrace_rows():
+    sql_results = {
+        "atrace_draw_frames": [
+            {
+                "frame_id": 9,
+                "actual_ts": 123,
+                "actual_dur": 20_000_000,
+                "dur_ms": 20.0,
+                "slice_name": "draw-VRI[0]",
+                "process_name": "com.demo",
+                "upid": 1,
+                "pid": 2,
+            }
+        ],
+        "atrace_traversal_frames": [],
+        "atrace_call_stack": [{"slice_id": 1}],
+    }
+
+    frames = get_unified_frame_timeline(sql_results, target_frame_time_ms=16.67)
+
+    assert frames[0]["present_type"] == "Late Present"
+    assert sql_results["jank_frame_call_stack"] == sql_results["atrace_call_stack"]

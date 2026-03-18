@@ -7,6 +7,10 @@ import logging
 from typing import Any
 
 from ..base_analyzer import BaseAnalyzer
+from ..diagnostics import (
+    describe_hardware_context as _describe_hardware_context,
+    get_cpu_frequency_stats,
+)
 from ..models import CategoryReport
 
 logger = logging.getLogger(__name__)
@@ -193,17 +197,7 @@ class ANRAnalyzer(BaseAnalyzer):
         sleeping_blocks = [b for b in blocking if b.get("state") == "S"]
         io_blocks = [b for b in blocking if b.get("state") == "D"]
 
-        cpu_freq_rows = sql_results.get("cpu_freq", [])
-        cpu_stats = []
-        if cpu_freq_rows:
-            cpu_stats = [
-                {
-                    "cpu": r.get("cpu"),
-                    "avg_freq_mhz": round((r.get("avg_freq_khz") or 0) / 1000, 0),
-                    "max_freq_mhz": round((r.get("max_freq_khz") or 0) / 1000, 0),
-                }
-                for r in cpu_freq_rows
-            ]
+        cpu_stats = get_cpu_frequency_stats(sql_results)
 
         return {
             "anr_count": len(anr_events),
@@ -218,7 +212,7 @@ class ANRAnalyzer(BaseAnalyzer):
     def _build_anr_prompt(
         self, statistics: dict[str, Any], sql_results: dict[str, Any]
     ) -> str:
-        hardware_context = _build_hardware_context(statistics)
+        hardware_context = _describe_hardware_context(statistics)
         return self.prompt_template.format(
             hardware_context=hardware_context,
             statistics_json=json.dumps(statistics, indent=2, ensure_ascii=False, default=str),
@@ -236,15 +230,3 @@ class ANRAnalyzer(BaseAnalyzer):
             ),
             package_name=statistics.get("package_name", "未指定"),
         )
-
-
-def _build_hardware_context(statistics: dict[str, Any]) -> str:
-    cpu_stats = statistics.get("cpu_freq_stats", [])
-    if not cpu_stats:
-        return "CPU 频率数据不可用"
-    max_freqs = [c.get("max_freq_mhz", 0) for c in cpu_stats]
-    overall_max = max(max_freqs) if max_freqs else 0
-    tier = ("旗舰机（≥3GHz）" if overall_max >= 3000
-            else "中端机（2-3GHz）" if overall_max >= 2000
-            else "低端机（<2GHz）")
-    return f"CPU 核心数: {len(cpu_stats)}，设备档次: {tier}，最高频率 {overall_max:.0f}MHz"
